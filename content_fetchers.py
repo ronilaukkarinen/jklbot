@@ -95,7 +95,6 @@ class ContentFetcher:
                 try:
                     event_url = f"https://kalenteri.jyvaskyla.fi/fi/tapahtuma/{event['id']}"
                     
-                    # Use the fetch_event_details function from tests
                     details = self.fetch_event_details(event_url)
                     if not details:
                         continue
@@ -107,22 +106,10 @@ class ContentFetcher:
                     if description:
                         description = description[:400] + "..." if len(description) > 400 else description
                     
-                    # Check for new event
-                    if not self.database.is_posted(content_id):
-                        content = (
-                            f"Uusi tapahtuma lisätty:\n\n"
-                            f"{details['title']}\n"
-                            f"{start_time.strftime('%d.%m.%Y klo %H:%M')}\n\n"
-                            f"{description}\n\n"
-                            f"{event_url}\n\n"
-                            f"{self.event_hashtags}"
-                        )
-                        content_list.append((content_id, content, 'new_event'))
-                    
                     # Check for upcoming notifications
                     time_until_event = start_time - now
                     
-                    # 24h notification
+                    # Only handle reminders, not new events
                     if timedelta(hours=23) < time_until_event <= timedelta(hours=24):
                         reminder_id = hashlib.md5(f"{content_id}_24h".encode()).hexdigest()
                         if not self.database.is_posted(reminder_id):
@@ -136,7 +123,6 @@ class ContentFetcher:
                             )
                             content_list.append((reminder_id, content, 'event_24h'))
                     
-                    # 6h notification
                     elif timedelta(hours=5) < time_until_event <= timedelta(hours=6):
                         reminder_id = hashlib.md5(f"{content_id}_6h".encode()).hexdigest()
                         if not self.database.is_posted(reminder_id):

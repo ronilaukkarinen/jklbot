@@ -29,6 +29,16 @@ class JyvaskylaBot:
     def check_and_post_updates(self):
         logging.info("Checking for new updates...")
         
+        # Check events
+        for content_id, content, event_type in self.content_fetcher.fetch_events():
+            try:
+                self.mastodon.status_post(content)
+                self.database.add_posted(content_id, event_type, content)
+                logging.info(f"Posted new {event_type}: {content[:100]}...")
+                time.sleep(5)
+            except Exception as e:
+                logging.error(f"Error posting event to Mastodon: {e}")
+        
         # Check Jyväskylä website
         for content_id, content in self.content_fetcher.fetch_jyvaskyla_website():
             try:
