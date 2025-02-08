@@ -2,6 +2,12 @@
 
 Jyväskylä Bot is a Mastodon bot that posts updates city of Jyväskylä news from various sources.
 
+This bot posts:
+
+- Jyväskylä news from RSS feed at jyvaskyla.fi
+- Events in Jyväskylä
+- Jyväskylä Facebook posts
+
 ## Installation
 
 First, make sure python-venv is installed:
