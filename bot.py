@@ -5,6 +5,7 @@ import logging
 from config import Config
 from database import Database
 from content_fetchers import ContentFetcher
+from datetime import datetime
 
 # Set up logging
 logging.basicConfig(
@@ -28,6 +29,17 @@ class JyvaskylaBot:
 
     def check_and_post_updates(self):
         logging.info("Checking for new updates...")
+        
+        # Check if it's Monday to post weekly events
+        if datetime.now().weekday() == 0:  # 0 = Monday
+            for content_id, content, event_type in self.content_fetcher.fetch_weekly_events():
+                try:
+                    self.mastodon.status_post(content)
+                    self.database.add_posted(content_id, event_type, content)
+                    logging.info(f"Posted weekly events summary")
+                    time.sleep(5)
+                except Exception as e:
+                    logging.error(f"Error posting weekly events to Mastodon: {e}")
         
         # Check events
         for content_id, content, event_type in self.content_fetcher.fetch_events():

@@ -187,4 +187,61 @@ class ContentFetcher:
             
         except Exception as e:
             logging.error(f"Error fetching event details from {event_url}: {e}")
-            return None 
+            return None
+
+    def fetch_weekly_events(self):
+        try:
+            url = "https://keskisuomievents.fi/api/items/event"
+            now = datetime.now(self.timezone)
+            week_end = now + timedelta(days=7)
+            
+            params = {
+                'start': now.strftime('%Y-%m-%d'),
+                'end': week_end.strftime('%Y-%m-%d'),
+                'limit': 100,
+                'sort': 'start_time',
+                'filter[start_time][_gte]': now.strftime('%Y-%m-%d')
+            }
+            
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            events_list = response.json()
+            logging.debug(f"API URL: {response.url}")
+            logging.debug(f"Number of events found: {len(events_list.get('data', []))}")
+            logging.debug(f"First event start time: {events_list.get('data', [{}])[0].get('start_time') if events_list.get('data') else 'No events'}")
+            
+            content_list = []
+            events_text = []
+            
+            for event in events_list.get('data', []):
+                try:
+                    event_url = f"https://kalenteri.jyvaskyla.fi/fi/tapahtuma/{event['id']}"
+                    start_time = datetime.fromisoformat(event['start_time'].replace('Z', '+00:00')).astimezone(self.timezone)
+                    
+                    # Only process events that start in the future and end before week_end
+                    if start_time >= now and start_time < week_end:
+                        details = self.fetch_event_details(event_url)
+                        if details:
+                            events_text.append(
+                                f"- {details['title']}, {start_time.strftime('%d.%m.%Y klo %H:%M')}"
+                            )
+                
+                except Exception as e:
+                    logging.error(f"Error processing event {event.get('id', 'unknown')}: {e}")
+                    continue
+            
+            if events_text:
+                content_id = hashlib.md5(f"weekly_{now.strftime('%Y-%W')}".encode()).hexdigest()
+                if not self.database.is_posted(content_id):
+                    content = (
+                        "Tämän viikon tapahtumat:\n\n"
+                        f"{chr(10).join(events_text)}\n\n"
+                        "https://kalenteri.jyvaskyla.fi\n\n"
+                        f"{self.event_hashtags}"
+                    )
+                    content_list.append((content_id, content, 'weekly_events'))
+            
+            return content_list
+        except Exception as e:
+            logging.error(f"Error fetching weekly events: {e}")
+            return [] 
