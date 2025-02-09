@@ -8,6 +8,8 @@ This bot posts:
 - Events in Jyväskylä
 - Jyväskylä Facebook posts
 
+![image](https://github.com/user-attachments/assets/0afc8d69-f25f-4af9-aae5-67349d28f545)
+
 ## Installation
 
 First, make sure python-venv is installed:
