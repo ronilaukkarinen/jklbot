@@ -13,12 +13,13 @@ class ContentFetcher:
         self.hashtags = "#Jyväskylä #Jkl #KeskiSuomi #Uutiset"
         self.event_hashtags = "#Jyväskylä #Jkl #Tapahtumat #KeskiSuomi"
         self.timezone = pytz.timezone('Europe/Helsinki')
+        self.enable_event_notifications = False
 
     def fetch_jyvaskyla_website(self):
         try:
             url = "https://www.jyvaskyla.fi/term/103/rss.xml"
             feed = feedparser.parse(url)
-            
+
             content_list = []
             for entry in feed.entries:
                 # Parse the published date
@@ -28,11 +29,11 @@ class ContentFetcher:
                     title = entry.title
                     link = entry.link
                     content_id = hashlib.md5(link.encode()).hexdigest()
-                    
+
                     if not self.database.is_posted(content_id):
-                        content = f"{title}\n\n{link}\n\n{self.hashtags}"
+                        content = f"{title}\n{link}\n\n{self.hashtags}"
                         content_list.append((content_id, content))
-                    
+
             return content_list
         except Exception as e:
             print(f"Error fetching Jyväskylä RSS feed: {e}")
@@ -58,57 +59,71 @@ class ContentFetcher:
             # Use a frequently updating news RSS feed for testing
             url = "https://feeds.yle.fi/uutiset/v1/recent.rss?publisherIds=YLE_UUTISET"
             feed = feedparser.parse(url)
-            
+
             content_list = []
             for entry in feed.entries:
                 title = entry.title
                 link = entry.link
                 content_id = hashlib.md5(link.encode()).hexdigest()
-                
+
                 if not self.database.is_posted(content_id):
                     content = f"TEST: {title}\n\n{link}\n\n#Test"
                     content_list.append((content_id, content))
-                    
+
             return content_list
         except Exception as e:
             print(f"Error fetching test feed: {e}")
             return []
 
-    def fetch_events(self):
+    def fetch_events(self, start_date=None, end_date=None):
         try:
             url = "https://keskisuomievents.fi/api/items/event"
             now = datetime.now(self.timezone)
-            
+
+            if start_date is None:
+                start = 'now'
+                end = (now + timedelta(days=30)).strftime('%Y-%m-%d')
+            else:
+                start = start_date.strftime('%Y-%m-%d')
+                end = end_date.strftime('%Y-%m-%d')
+
             params = {
-                'start': 'now',
-                'end': (now + timedelta(days=30)).strftime('%Y-%m-%d'),
-                'limit': 100
+                'start': start,
+                'end': end,
+                'limit': 100,
+                'sort': 'start_time',
+                'filter[start_time][_gte]': start,
+                'filter[end_time][_gte]': start
             }
-            
+
             response = requests.get(url, params=params)
             response.raise_for_status()
             events_list = response.json()
-            
+
             content_list = []
-            
+
             for event in events_list.get('data', []):
                 try:
                     event_url = f"https://kalenteri.jyvaskyla.fi/fi/tapahtuma/{event['id']}"
-                    
+
                     details = self.fetch_event_details(event_url)
                     if not details:
                         continue
-                    
+
                     start_time = datetime.fromisoformat(event['start_time'].replace('Z', '+00:00')).astimezone(self.timezone)
                     content_id = hashlib.md5(f"{event['id']}".encode()).hexdigest()
-                    
+
                     description = details['description']
                     if description:
                         description = description[:400] + "..." if len(description) > 400 else description
-                    
+
                     # Check for upcoming notifications
                     time_until_event = start_time - now
-                    
+
+                    # Only handle reminders if enabled
+                    if not self.enable_event_notifications:
+                        return []
+
                     # Only handle reminders, not new events
                     if timedelta(hours=23) < time_until_event <= timedelta(hours=24):
                         reminder_id = hashlib.md5(f"{content_id}_24h".encode()).hexdigest()
@@ -122,7 +137,7 @@ class ContentFetcher:
                                 f"{self.event_hashtags}"
                             )
                             content_list.append((reminder_id, content, 'event_24h'))
-                    
+
                     elif timedelta(hours=5) < time_until_event <= timedelta(hours=6):
                         reminder_id = hashlib.md5(f"{content_id}_6h".encode()).hexdigest()
                         if not self.database.is_posted(reminder_id):
@@ -135,11 +150,11 @@ class ContentFetcher:
                                 f"{self.event_hashtags}"
                             )
                             content_list.append((reminder_id, content, 'event_6h'))
-                
+
                 except Exception as e:
                     logging.error(f"Error processing event {event.get('id', 'unknown')}: {e}")
                     continue
-                    
+
             return content_list
         except Exception as e:
             logging.error(f"Error fetching events from API: {e}")
@@ -150,41 +165,45 @@ class ContentFetcher:
             response = requests.get(event_url)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Find the event title
-            title = soup.find('h1', class_='event-title')
+
+            # Find the event title (try multiple approaches)
+            title = None
+            title_elem = soup.find('h1', class_='event-title')
+            if title_elem:
+                title = title_elem.text.strip()
+            else:
+                meta_title = soup.find('meta', property='og:title')
+                if meta_title:
+                    title = meta_title.get('content', '').strip()
+
             if not title:
+                logging.warning(f"Could not find title for event at {event_url}")
                 return None
-            title = title.text.strip()
-            
-            # Find the event description
-            description = soup.find('div', class_='event-description')
-            if description:
-                description = description.text.strip()
-            
-            # Find the short description
-            short_description = soup.find('div', class_='event-short-description')
-            if short_description:
-                short_description = short_description.text.strip()
-            
-            # Find the location
-            location = soup.find('div', class_='event-location')
-            if location:
-                location = location.text.strip()
-            
-            # Find the start time
-            start_time = soup.find('div', class_='event-start-time')
-            if start_time:
-                start_time = start_time.text.strip()
-            
+
+            # Find the event description (try multiple approaches)
+            description = None
+            desc_elem = soup.find('div', class_='event-description')
+            if desc_elem:
+                description = desc_elem.text.strip()
+            else:
+                meta_desc = soup.find('meta', property='og:description')
+                if meta_desc:
+                    description = meta_desc.get('content', '').strip()
+                else:
+                    short_desc = soup.find('div', class_='event-short-description')
+                    if short_desc:
+                        description = short_desc.text.strip()
+
+            logging.info(f"Found event: {title}")
+
             return {
                 'title': title,
-                'description': description,
-                'short_description': short_description,
-                'location': location,
-                'start_time': start_time
+                'description': description or '',
+                'short_description': description or '',
+                'location': '',
+                'start_time': ''
             }
-            
+
         except Exception as e:
             logging.error(f"Error fetching event details from {event_url}: {e}")
             return None
@@ -193,43 +212,64 @@ class ContentFetcher:
         try:
             url = "https://keskisuomievents.fi/api/items/event"
             now = datetime.now(self.timezone)
-            week_end = now + timedelta(days=7)
-            
+
+            # Calculate end of week (Sunday)
+            days_until_sunday = (6 - now.weekday()) % 7
+            week_end = now + timedelta(days=days_until_sunday)
+
             params = {
                 'start': now.strftime('%Y-%m-%d'),
                 'end': week_end.strftime('%Y-%m-%d'),
                 'limit': 100,
                 'sort': 'start_time',
-                'filter[start_time][_gte]': now.strftime('%Y-%m-%d')
+                'filter[start_time][_gte]': now.strftime('%Y-%m-%d'),
+                'filter[end_time][_gte]': now.strftime('%Y-%m-%d')  # Match test implementation
             }
-            
+
+            logging.info(f"Fetching weekly events from {now.strftime('%Y-%m-%d')} to {week_end.strftime('%Y-%m-%d')}")
+
             response = requests.get(url, params=params)
             response.raise_for_status()
             events_list = response.json()
-            logging.debug(f"API URL: {response.url}")
-            logging.debug(f"Number of events found: {len(events_list.get('data', []))}")
-            logging.debug(f"First event start time: {events_list.get('data', [{}])[0].get('start_time') if events_list.get('data') else 'No events'}")
-            
+
+            event_count = len(events_list.get('data', []))
+            logging.info(f"Found {event_count} events in API response")
+
+            if event_count == 0:
+                logging.warning("No events returned from API")
+                return []
+
             content_list = []
             events_text = []
-            
+            seen_events = set()
+
             for event in events_list.get('data', []):
                 try:
                     event_url = f"https://kalenteri.jyvaskyla.fi/fi/tapahtuma/{event['id']}"
                     start_time = datetime.fromisoformat(event['start_time'].replace('Z', '+00:00')).astimezone(self.timezone)
-                    
-                    # Only process events that start in the future and end before week_end
-                    if start_time >= now and start_time < week_end:
+
+                    logging.info(f"Processing event {event['id']} starting at {start_time}")
+
+                    if now <= start_time < week_end:  # Match test implementation's date check
                         details = self.fetch_event_details(event_url)
-                        if details:
-                            events_text.append(
-                                f"- {details['title']}, {start_time.strftime('%d.%m.%Y klo %H:%M')}"
-                            )
-                
+                        if details and details['title']:
+                            event_key = f"{details['title']}_{start_time.strftime('%Y%m%d%H%M')}"
+
+                            if event_key not in seen_events:
+                                seen_events.add(event_key)
+                                events_text.append(
+                                    f"- {details['title']}, {start_time.strftime('%d.%m.%Y klo %H:%M')}"
+                                )
+                                logging.info(f"Added event: {details['title']} at {start_time}")
+                        else:
+                            logging.warning(f"Could not fetch details for event {event['id']}")
+
                 except Exception as e:
                     logging.error(f"Error processing event {event.get('id', 'unknown')}: {e}")
                     continue
-            
+
+            logging.info(f"Processed {len(events_text)} valid events for the week")
+
             if events_text:
                 content_id = hashlib.md5(f"weekly_{now.strftime('%Y-%W')}".encode()).hexdigest()
                 if not self.database.is_posted(content_id):
@@ -240,8 +280,13 @@ class ContentFetcher:
                         f"{self.event_hashtags}"
                     )
                     content_list.append((content_id, content, 'weekly_events'))
-            
+                    logging.info(f"Created weekly events post with ID: {content_id}")
+                else:
+                    logging.info(f"Weekly events already posted for week {now.strftime('%Y-%W')}")
+            else:
+                logging.info("No events found for this week")
+
             return content_list
         except Exception as e:
             logging.error(f"Error fetching weekly events: {e}")
-            return [] 
+            return []
